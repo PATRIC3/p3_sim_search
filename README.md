@@ -1,2 +1,2 @@
-# p3_blast
-Backend BLAST service for P3
+# p3_sim_search
+Backend Similarity / BLAST service for P3
