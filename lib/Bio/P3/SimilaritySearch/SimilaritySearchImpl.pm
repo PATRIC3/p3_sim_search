@@ -148,7 +148,13 @@ sub _handle_search
 	{
 	    die "No database files found\n";
 	}
-	
+
+	#
+	# Construct our command line and start the blast.
+	#
+
+	push(@cmd, "-db", $db_files[0]);
+	push(@cmd, "-query", 
 	$ret = [200, ['Content-Type' => 'text/plain'], \@db_files];
 
 
@@ -156,7 +162,6 @@ sub _handle_search
 	print STDERR "Error handling search: $_";
     };
 
-    return $ret if $ret;
     return [500, ['Content-Type' => 'text/plain'], ["Error handling search\n"]];
 	   
 }
