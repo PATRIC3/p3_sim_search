@@ -8,9 +8,11 @@ SERVER_SPEC = SimilarityService.spec
 SERVICE_MODULE = lib/Bio/P3/SimilarityService/Service.pm
 
 SERVICE = similarity_service
+SERVICE_NAME = SimilarityService
 SERVICE_PORT = 7132
 
 ASYNC_SERVICE_PORT = 7133
+ASYNC_SERVICE_PSGI = SimilarityServiceAsync.psgi
 
 SERVICE_URL = https://kbase.us/services/$(SERVICE)
 
@@ -30,9 +32,11 @@ endif
 
 TPAGE_ARGS = --define kb_top=$(TARGET) \
 	--define kb_runtime=$(DEPLOY_RUNTIME) \
-	--define kb_service_name=$(SERVICE) \
+	--define kb_service=$(SERVICE) \
+	--define kb_service_name=$(SERVICE_NAME) \
 	--define kb_service_port=$(SERVICE_PORT) \
 	--define kb_async_service_port=$(ASYNC_SERVICE_PORT) \
+	--define kb_async_psgi=$(ASYNC_SERVICE_PSGI) \
 	$(TPAGE_TEMPDIR)
 
 TESTS = $(wildcard t/client-tests/*.t)
@@ -79,7 +83,7 @@ deploy-all: deploy-client deploy-service
 deploy-client: compile-typespec deploy-docs deploy-libs deploy-scripts 
 
 
-deploy-service: deploy-dir deploy-monit deploy-libs deploy-service-scripts
+deploy-service: deploy-dir deploy-libs deploy-service-scripts
 	$(TPAGE) $(TPAGE_ARGS) service/start_service.tt > $(TARGET)/services/$(SERVICE)/start_service
 	chmod +x $(TARGET)/services/$(SERVICE)/start_service
 	$(TPAGE) $(TPAGE_ARGS) service/stop_service.tt > $(TARGET)/services/$(SERVICE)/stop_service
