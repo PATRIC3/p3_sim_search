@@ -19,11 +19,16 @@ Empty for now - initial implementation is a REST / AsyncIO service.
 
 #BEGIN_HEADER
 
+use v5.14;
+no warnings 'experimental::smartmatch';
+
 use Bio::KBase::DeploymentConfig;
 
 use Data::Dumper;
 
+use IPC::Run;
 use AnyEvent;
+use AnyEvent::Run;
 use AnyEvent::HTTP;
 use Plack::Request;
 use JSON::XS;
@@ -37,6 +42,8 @@ sub _sim_service_start
     my($self) = @_;
 
     print STDERR "Sim search service starting\n";
+
+    $self->{_next_job} = "JOB000000";
 }
 
 #
@@ -53,7 +60,6 @@ sub _sim_request
     my $req = Plack::Request->new($env);
     my $path = $req->path_info;
 
-
     if ($path =~ m,^/search$,)
     {
 	print STDERR "Have search request for '$path'" . Dumper($req);
@@ -69,55 +75,101 @@ sub _handle_search
 {
     my($self, $env, $req) = @_;
 
-    my $fh = $env->{'psgi.input'};
+    #
+    # If we have query parameters we are going to read our data from the input.
+    # Otherwise, we pull from the parsed JSON in the input.
 
-    my $txt;
+    my $query_fh;
+    my $params;
+    if ($req->query_string)
     {
-	local $/;
-	undef $/;
-	$txt = <$fh>;
+	my $q = $req->parameters;
+	$params = {};
+	print STDERR Dumper($q);
+	$params->{subject_genome} = [$q->get_all('subject_genome')];
+	for my $k (qw(program output_format max_hits min_coverage evalue))
+	{
+	    my $v = $q->get($k);
+	    $params->{$k} = $v if defined($v);
+	}
+	$query_fh =  $env->{'psgi.input'}
     }
-    print "Have $txt\n";
+    else
+    {	
+	my $fh = $env->{'psgi.input'};
+
+	my $txt;
+        {
+	    local $/;
+	    undef $/;
+	    $txt = <$fh>;
+	}
+	print "Have $txt\n";
+	
+	try {
+	    $params = decode_json($txt);
+
+	} catch {
+	    die "Error parsing input XML: $_";
+	};
+    }
 
     my $ret;
-
+	
     try {
-	my $params = decode_json($txt);
-
 	my $subj_genomes = $params->{subject_genome};
 	$subj_genomes = [$subj_genomes] if ($subj_genomes && !ref($subj_genomes));
-
 	my @cmd;
+
 	my $subj_db_type;
 	if ($params->{program} eq 'blastp')
 	{
-	    push(@cmd, 'blastp');
+	    push(@cmd, 'blastp+');
 	    $subj_db_type = 'a';
 	}
 	elsif ($params->{program} eq 'blastn')
 	{
-	    push(@cmd, 'blastn');
+	    push(@cmd, 'blastn+');
 	    $subj_db_type = 'd';
 	}
 	elsif ($params->{program} eq 'blastx')
 	{
-	    push(@cmd, 'blastx');
+	    push(@cmd, 'blastx+');
 	    $subj_db_type = 'a';
 	}
 	elsif ($params->{program} eq 'tblastn')
 	{
-	    push(@cmd, 'tblastn');
+	    push(@cmd, 'tblastn+');
 	    $subj_db_type = 'd';
 	}
 	elsif ($params->{program} eq 'tblastx')
 	{
-	    push(@cmd, 'tblastx');
+	    push(@cmd, 'tblastx+');
 	    $subj_db_type = 'd';
 	}
 	else
 	{
 	    die "Unknown program $params->{program}\n";
 	}
+
+	if (my $v = $params->{evalue})
+	{
+	    push(@cmd, "-evalue", $v);
+	}
+
+	if (my $v = $params->{max_hits})
+	{
+	    push(@cmd, "-max_hsps", $v);
+	}
+
+	if (my $v = $params->{min_coverage})
+	{
+	    push(@cmd, "-qcov_hsp_perc", $v);
+	}
+
+	
+
+	    
 	
 	my @db_files;
 	if (ref($subj_genomes))
@@ -143,26 +195,153 @@ sub _handle_search
 		}
 	    }
 	}
+	my $db_file;
+	my $build_db;
 	print STDERR Dumper(\@db_files);
 	if (@db_files == 0)
 	{
 	    die "No database files found\n";
 	}
-
+	elsif (@db_files == 1)
+	{
+	    $db_file = $db_files[0];
+	}
+	elsif (@db_files > 1)
+	{
+	    $db_file = File::Temp->new(UNLINK => 0);
+	    close($db_file);
+	    $build_db = ["blastdb_aliastool+",
+			 "-dblist", join(" ", @db_files),
+			 "-title", join(" ", @$subj_genomes),
+			 "-dbtype", ($subj_db_type eq 'a' ? 'prot' : 'nucl'),
+			 "-out", $db_file];
+	}   
+	
 	#
-	# Construct our command line and start the blast.
+	# Determine output format.
+	#
+	my $blast_fmt = 13;
+	my $content_type = "application/json";
+	for ($params->{output_format})
+	{
+	    when("pairwise")
+	    {
+		$blast_fmt = 0;
+		$content_type = "text/plain";
+	    }
+	    when ("xml")
+	    {
+		$blast_fmt = 5;
+		$content_type = "text/xml";
+	    }
+	    when ("tabular")
+	    {
+		$blast_fmt = 6;
+		$content_type = "text/plain";
+	    }
+	    when ("blast_archive")
+	    {
+		$blast_fmt = 1;
+		$content_type = "text/plain";
+	    }
+	    when("json")
+	    {
+		$blast_fmt = 13;
+		$content_type = "application/xml";
+	    }
+	}
+    
+	#
+	# We have done our validation. Set up for async streaming output.
 	#
 
-	push(@cmd, "-db", $db_files[0]);
-	push(@cmd, "-query", 
-	$ret = [200, ['Content-Type' => 'text/plain'], \@db_files];
+	push(@cmd, "-db", "$db_file");
+	push(@cmd, "-outfmt", $blast_fmt);
 
+	$ret = sub {
+	    my($responder) = @_;
 
+	    my $job_id = $self->{_next_job}++;
+
+	    my $writer = $responder->([200, ["Content-type" => $content_type]]);
+
+	    my $start_blast = sub {
+		print "Start @cmd\n";
+	    
+		#
+		# Hook in an error handler
+		#
+		$writer->{handle}->on_error(sub {
+		    my($h, $fatal, $error) = @_;
+		    print STDERR "Handler for $job_id got error $error\n";
+		    delete $self->{_active_jobs}->{$job_id};
+		});
+
+		my $h = AnyEvent::Run->new(cmd => \@cmd,
+					   on_read => sub {
+					       my($h) = @_;
+					       $writer->write($h->rbuf);
+					       $h->rbuf = '';
+					   },
+					   on_eof => sub {
+					       my($h) = @_;
+					       $writer->close();
+					       delete $self->{_active_jobs}->{$job_id};
+					   },
+					   on_error => sub {
+					       my($h, $fatal, $msg) = @_;
+					       $writer->close();
+					       delete $self->{_active_jobs}->{$job_id};
+					   });
+		
+		if ($query_fh)
+		{
+		    #
+		    # Twiggy reads the input into a memory buffer, so we
+		    # just dump that into the run handle.
+		    my $buf;
+		    while (read($query_fh, $buf, 1048576))
+		    {
+			$h->push_write($buf);
+		    }
+		    $h->push_shutdown();
+		}
+		else
+		{
+		    $h->push_write($params->{query});
+		    $h->push_shutdown();
+		}
+		$self->{_active_jobs}->{$job_id} = $h;
+	    };
+
+	    if ($build_db)
+	    {
+		my $build_h = AnyEvent::Run->new(cmd => $build_db,
+						 on_read => sub {
+						     my($rh) = @_;
+						     print STDERR "Build says: " . $rh->rbuf . "\n";
+						     $rh->rbuf = '';
+						 },
+						 on_eof => sub {
+						     my($rh) = @_;
+						     print "Build finished; starting blast\n";
+						     delete $self->{_active_builds}->{$job_id};
+						     &$start_blast();
+						 });
+		$self->{_active_builds}->{$job_id} = $build_h;
+						 
+	    }
+	    else
+	    {
+		&$start_blast();
+	    }
+	}
     } catch {
 	print STDERR "Error handling search: $_";
+	$ret = [500, ['Content-Type' => 'text/plain'], ["Error handling search\n"]];
     };
 
-    return [500, ['Content-Type' => 'text/plain'], ["Error handling search\n"]];
+    return $ret;
 	   
 }
     
