@@ -104,7 +104,6 @@ sub _handle_search
 	    undef $/;
 	    $txt = <$fh>;
 	}
-	print "Have $txt\n";
 	
 	try {
 	    $params = decode_json($txt);
@@ -266,7 +265,7 @@ sub _handle_search
 	    my $writer = $responder->([200, ["Content-type" => $content_type]]);
 
 	    my $start_blast = sub {
-		print "Start @cmd\n";
+		print STDERR "Start @cmd\n";
 	    
 		#
 		# Hook in an error handler
@@ -324,7 +323,7 @@ sub _handle_search
 						 },
 						 on_eof => sub {
 						     my($rh) = @_;
-						     print "Build finished; starting blast\n";
+						     print STDERR "Build finished; starting blast\n";
 						     delete $self->{_active_builds}->{$job_id};
 						     &$start_blast();
 						 });
