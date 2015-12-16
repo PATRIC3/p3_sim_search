@@ -109,7 +109,7 @@ sub _handle_search
 	    $params = decode_json($txt);
 
 	} catch {
-	    die "Error parsing input XML: $_";
+	    die "Error parsing input JSON: $_";
 	};
     }
 
@@ -265,8 +265,10 @@ sub _handle_search
 	    my $writer = $responder->([200, ["Content-type" => $content_type]]);
 
 	    my $start_blast = sub {
-		print STDERR "Start @cmd\n";
-	    
+		my @running = keys %{$self->{_active_jobs}};
+		my $n = @running;
+		print STDERR "Start @cmd: $n active (@running)\n";
+
 		#
 		# Hook in an error handler
 		#
@@ -286,6 +288,9 @@ sub _handle_search
 					       my($h) = @_;
 					       $writer->close();
 					       delete $self->{_active_jobs}->{$job_id};
+					       my @running = keys %{$self->{_active_jobs}};
+					       my $n = @running;
+					       print STDERR "Finish @cmd: $n active (@running)\n";
 					   },
 					   on_error => sub {
 					       my($h, $fatal, $msg) = @_;
