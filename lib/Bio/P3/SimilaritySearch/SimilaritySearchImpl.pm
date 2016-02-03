@@ -175,7 +175,11 @@ sub _handle_search
 	{
 	    for my $g (@$subj_genomes)
 	    {
-		my $f = "$self->{_blast_db_genomes}/$g";
+		my $f = "$self->{_blast_db_genomes}";
+		if (-d "$f/$g")
+		{
+		    $f .= "/$g";
+		}
 		if ($subj_db_type eq 'a')
 		{
 		    $f .= "/$g.PATRIC.faa";
@@ -184,7 +188,7 @@ sub _handle_search
 		{
 		    $f .= "/$g.PATRIC.ffn";
 		}
-		if (! -f $f)
+		if (! <$f.*>)
 		{
 		    warn "Could not find db file for $g in $f\n";
 		}
